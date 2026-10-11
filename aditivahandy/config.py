@@ -20,7 +20,11 @@ def resolve_hub_dir() -> Path:
     override = os.getenv("ADITIVA_HUB_DIR", "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parents[2] / "3d_printer_connection_hub"
+    here = Path(__file__).resolve()
+    packaged = here.parents[1] / "vendor" / "3d_printer_connection_hub"
+    if (packaged / "printer_drivers.py").is_file():
+        return packaged
+    return here.parents[2] / "3d_printer_connection_hub"
 
 
 HUB_DIR = resolve_hub_dir()

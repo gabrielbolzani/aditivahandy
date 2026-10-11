@@ -1,0 +1,73 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build AditivaHandy.exe
+        run: |
+          python -m pip install -r windows/requirements-build.txt
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --name AditivaHandy windows/app.py
+      - name: Pack Windows zip
+        shell: pwsh
+        run: |
+          $stage = "stage-windows"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/AditivaHandy.exe $stage
+          Copy-Item README.md, requirements.txt, run.py, docker-compose.yml, Dockerfile, install.sh $stage
+          Copy-Item -Recurse aditivahandy, vendor $stage
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          Compress-Archive -Path "$stage/*" -DestinationPath "AditivaHandy-$version-windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: AditivaHandy-*-windows.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack Linux archive
+        run: |
+          stage="stage-linux"
+          mkdir -p "$stage"
+          cp README.md requirements.txt run.py docker-compose.yml Dockerfile install.sh "$stage"
+          cp -a aditivahandy vendor "$stage"
+          chmod +x "$stage/install.sh"
+          version="${GITHUB_REF_NAME#v}"
+          tar -C "$stage" -czf "AditivaHandy-${version}-linux.tar.gz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar
+          path: AditivaHandy-*-linux.tar.gz
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "AditivaHandy ${GITHUB_REF_NAME}" \
+              --notes-file README.md
+          fi
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber

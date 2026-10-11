@@ -1,0 +1,5 @@
+services:
+  aditivahandy:
+    build: .
+    network_mode: host
+    restart: unless-stopped
