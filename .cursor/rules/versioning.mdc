@@ -1,0 +1,18 @@
+---
+description: Bump the AditivaHandy version in the single source file whenever user-visible behavior changes
+alwaysApply: true
+---
+
+# Versionamento do AditivaHandy
+
+A versão mora só em `aditivahandy/__init__.py` (`APP_VERSION`). A página local, o pareamento e o `handy.health` leem esse valor. Não escreva a versão em outro arquivo, fallback ou texto solto.
+
+O repositório público é https://github.com/gabrielbolzani/aditivahandy. Uma entrega que muda o programa sobe a versão aqui e ganha uma release `v` + número, para a plataforma comparar com o que cada computador está transmitindo.
+
+- **PATCH** (`1.0.1`): correção, texto, ajuste, sem capacidade nova.
+- **MINOR** (`1.1.0`): função nova ou mudança de comportamento. O patch volta a 0.
+- **MAJOR** (`2.0.0`): mudança que quebra um fluxo que o computador já usa, ou um marco explícito pedido. Minor e patch voltam a 0.
+
+Uma entrega sobe um nível só. Não invente um quarto número e não deixe a versão igual depois de alterar o programa.
+
+A versão do AditivaFlow é outra. Só mexa nela quando a plataforma também mudar.
