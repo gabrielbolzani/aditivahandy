@@ -45,10 +45,13 @@ jobs:
           chmod +x "$stage/install.sh"
           version="${GITHUB_REF_NAME#v}"
           tar -C "$stage" -czf "AditivaHandy-${version}-linux.tar.gz" .
+          cp "AditivaHandy-${version}-linux.tar.gz" "AditivaHandy-${version}-raspberry-pi.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-tar
-          path: AditivaHandy-*-linux.tar.gz
+          path: |
+            AditivaHandy-*-linux.tar.gz
+            AditivaHandy-*-raspberry-pi.tar.gz
 
   publish:
     needs: [windows, linux]
