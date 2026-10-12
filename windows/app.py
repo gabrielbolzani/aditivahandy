@@ -11,7 +11,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QThread, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,6 +31,7 @@ PYTHON_INSTALLER = "python-3.12.7-amd64.exe"
 PYTHON_URL = f"https://www.python.org/ftp/python/3.12.7/{PYTHON_INSTALLER}"
 PYTHON_PAGE = "https://www.python.org/downloads/windows/"
 PORT = int(os.environ.get("HANDY_PORT", "8787"))
+RESTART_EXIT_CODE = 75
 
 
 def app_root() -> Path:
@@ -228,6 +229,9 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.process = QProcess(self)
         self.process.setWorkingDirectory(str(app_root()))
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert("HANDY_SUPERVISED", "1")
+        self.process.setProcessEnvironment(environment)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.finished.connect(self._finished)
@@ -331,6 +335,10 @@ class MainWindow(QMainWindow):
     def _finished(self, code: int, _status) -> None:
         self._owns_process = False
         if self._quitting:
+            return
+        if code == RESTART_EXIT_CODE:
+            self._set_status("A ponte foi atualizada. Iniciando a versão nova.")
+            QTimer.singleShot(1500, self._start_bridge)
             return
         self._set_status(f"A ponte parou (código {code}).")
 

@@ -41,7 +41,7 @@ O vínculo deste computador fica em `%APPDATA%\AditivaHandy\device.json`.
 No computador, rode:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.2.1/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.0/install.sh | bash
 ```
 
 O script escolhe um dos dois caminhos:
@@ -53,7 +53,7 @@ Quando o comando terminar, ele mostra dois endereços. Abra `http://127.0.0.1:87
 
 O arquivo que termina com `-linux.tar.gz`, na mesma página de releases, traz o `install.sh`, o `Dockerfile` e o `docker-compose.yml`. Dentro da pasta extraída, `bash install.sh` faz a mesma instalação.
 
-Para atualizar, rode o mesmo comando da versão nova. O vínculo com a conta é mantido e o serviço reinicia sozinho.
+Para atualizar à mão, rode o mesmo comando da versão nova. O vínculo com a conta é mantido e o serviço reinicia sozinho.
 
 ## Raspberry Pi
 
@@ -71,7 +71,7 @@ Funciona no Raspberry Pi 3, 4 e 5 com o Raspberry Pi OS de 64 bits. O Raspberry 
 4. Já dentro do Raspberry, rode:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.2.1/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.0/install.sh | bash
    ```
 
    A primeira instalação leva alguns minutos, porque baixa as bibliotecas.
@@ -88,6 +88,18 @@ Na página de releases, o arquivo que termina com `-raspberry-pi.tar.gz` é o me
 Para ver se o serviço sem Docker está no ar: `systemctl --user status aditivahandy`. Para ver o container: `docker compose -f ~/.local/share/aditivahandy/docker-compose.yml ps`.
 
 O vínculo fica em `~/.config/aditivahandy/device.json`.
+
+## Atualizar pela plataforma
+
+A partir da 1.3.0, o AditivaHandy se atualiza sozinho. No AditivaFlow, abra **Configurações**, aba **Integrações**. Quando sair uma versão nova, o computador mostra **atualização** ao lado da versão. Clique no botão de atualizar e confirme.
+
+O programa baixa a versão pedida deste repositório, troca os próprios arquivos, instala bibliotecas novas se precisar e reinicia. O vínculo com a conta continua. Em alguns segundos a versão nova aparece na plataforma.
+
+- **Linux e Raspberry Pi (sem Docker):** funciona direto.
+- **Windows:** funciona direto. A janela do `AditivaHandy.exe` mostra a troca e liga a versão nova.
+- **Docker:** o container não troca os próprios arquivos. Rode de novo o comando de instalação da versão nova.
+
+Quem está numa versão anterior à 1.3.0 precisa instalar a 1.3.0 uma vez pelo jeito normal. As próximas podem ser pedidas pela plataforma.
 
 ## Depois de instalar
 

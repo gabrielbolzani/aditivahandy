@@ -157,12 +157,11 @@ class GatewaySession:
                         str(inner.get("action") or ""),
                     )
             elif command == "app.update":
-                from .updater import accept_update
+                from .updater import apply_update
 
-                message = accept_update(
-                    str(inner.get("version") or ""),
-                    str(inner.get("url") or ""),
-                )
+                self.on_status(f"Atualizando para v{str(inner.get('version') or '').lstrip('v')}…")
+                message = await asyncio.to_thread(apply_update, str(inner.get("version") or ""))
+                self.on_status(message)
             elif command == "alexa.speak":
                 result = await alexa.speak_async(
                     str(inner.get("serial") or ""),
