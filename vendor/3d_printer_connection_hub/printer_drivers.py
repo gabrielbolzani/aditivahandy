@@ -12,6 +12,9 @@ import ftplib
 import zipfile
 import io
 import base64
+import re
+import shutil
+import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from logger_config import log_info, log_error, log_debug, log_warn
@@ -356,10 +359,18 @@ class MoonrakerPrinter(BasePrinter):
         self._reset_status()
 
 # Elegoo (Saturn 3 Ultra) Implementation - UDP
+def _tcp_port(value, default):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
 class ElegooPrinter(BasePrinter):
     def __init__(self, config):
         super().__init__(config)
-        self.port = config.get('port', 3000)
+        self.port = _tcp_port(config.get('port'), 3000)
         # Resin printers don't have nozzle/bed temperatures
         self.status.pop('temp_nozzle', None)
         self.status.pop('temp_bed', None)
@@ -370,7 +381,7 @@ class ElegooPrinter(BasePrinter):
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(1.5) # Aumentar ligeiramente
             sock.sendto(message.encode(), (self.ip, self.port))
-            data, _ = sock.recvfrom(4096)
+            data, _ = sock.recvfrom(65535)
             return json.loads(data.decode())
         except socket.timeout:
             # log_debug(f"Elegoo timeout: {self.ip}")
@@ -459,109 +470,131 @@ class BambuCameraThread(threading.Thread):
     def stop(self):
         self._stop_event.set()
 
+    def _port_open(self, port):
+        sock = socket.socket()
+        sock.settimeout(2)
+        try:
+            sock.connect((self.ip, port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
     def run(self):
         self.setName(f"BambuCamera-{self.ip}")
-        print(f"[{self.ip}] Iniciando thread da câmera (Match Exemplo)...")
-        
-        username = 'bblp'
-        port = 6000
-        
-        # Payload de autenticação - Montagem byte a byte idêntica ao exemplo funcional
-        auth_data = bytearray()
-        auth_data += struct.pack("<I", 0x40)   # Payload size (64 bytes)
-        auth_data += struct.pack("<I", 0x3000) # Type
-        auth_data += struct.pack("<I", 0)      # Seq
-        auth_data += struct.pack("<I", 0)      # Reserved
-        
-        # Username (32 bytes)
-        for i in range(len(username)):
-            auth_data += struct.pack("<c", username[i].encode('ascii'))
-        for i in range(32 - len(username)):
-            auth_data += struct.pack("<x")
-            
-        # Access Code (32 bytes) - Respeita o case fornecido pelo usuário
-        for i in range(len(self.access_code)):
-            auth_data += struct.pack("<c", self.access_code[i].encode('ascii'))
-        for i in range(32 - len(self.access_code)):
-            auth_data += struct.pack("<x")
+        # X1C e H2D com vídeo de rede ligado entregam H.264 em rtsps na porta 322.
+        # A1 e P1 entregam JPEG na porta 6000.
+        if self._port_open(322) and shutil.which("ffmpeg"):
+            log_info(f"[{self.ip}] Câmera pelo vídeo de rede.")
+            while not self._stop_event.is_set():
+                self._read_rtsp()
+                if self._stop_event.wait(5):
+                    break
+            return
+        if self._port_open(322) and not shutil.which("ffmpeg"):
+            log_error(f"[{self.ip}] A câmera desta impressora precisa do ffmpeg instalado.")
+        log_info(f"[{self.ip}] Câmera pelo JPEG da porta 6000.")
+        while not self._stop_event.is_set():
+            self._read_mjpeg()
+            if self._stop_event.wait(5):
+                break
 
-        # Contexto SSL - Refinado para X1C
+    def _read_rtsp(self):
+        url = f"rtsps://bblp:{self.access_code}@{self.ip}:322/streaming/live/1"
+        proc = subprocess.Popen(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-rtsp_transport", "tcp",
+                "-i", url, "-an", "-vf", "fps=1",
+                "-q:v", "8", "-f", "mjpeg", "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        buf = b""
+        try:
+            while not self._stop_event.is_set():
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                while True:
+                    start = buf.find(b"\xff\xd8")
+                    end = buf.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+                    if start < 0 or end < 0:
+                        if start > 0:
+                            buf = buf[start:]
+                        elif start < 0 and len(buf) > 2_000_000:
+                            buf = buf[-2:]
+                        break
+                    self.callback(bytes(buf[start:end + 2]))
+                    buf = buf[end + 2:]
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    def _read_mjpeg(self):
+        username = "bblp"
+        auth_data = bytearray()
+        auth_data += struct.pack("<I", 0x40)
+        auth_data += struct.pack("<I", 0x3000)
+        auth_data += struct.pack("<I", 0)
+        auth_data += struct.pack("<I", 0)
+        auth_data += username.encode("ascii").ljust(32, b"\x00")
+        auth_data += str(self.access_code).encode("ascii")[:32].ljust(32, b"\x00")
+
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        ctx.set_ciphers('DEFAULT@SECLEVEL=1:AES128-SHA')
-        # Desabilita protocolos inseguros mas mantém TLS 1.2
+        ctx.set_ciphers("DEFAULT@SECLEVEL=1:AES128-SHA")
         ctx.options |= ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3 | ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
 
-        while not self._stop_event.is_set():
+        try:
+            sock = socket.create_connection((self.ip, 6000), timeout=3)
+            sock.settimeout(3)
             try:
-                # Usar socket puro para ter controle total do timeout antes do wrap
-                sock = socket.create_connection((self.ip, port), timeout=3)
-                sock.settimeout(3)
-                # server_hostname=None to avoid SNI issues with IP addresses on some firmware
-                try:
-                    sslSock = ctx.wrap_socket(sock, server_hostname=None)
-                except:
-                    sock.close()
-                    raise
-                
-                with sslSock:
-                    log_debug(f"[{self.ip}] Câmera: Conexão SSL estabelecida (Match Exemplo).")
-                    
-                    # Atraso crucial para a X1C processar o handshake antes do auth
-                    time.sleep(0.5)
-                    sslSock.sendall(auth_data)
-                    
-                    buffer = bytearray()
-                    sslSock.setblocking(False)
-                    
-                    while not self._stop_event.is_set():
+                secured = ctx.wrap_socket(sock, server_hostname=None)
+            except Exception:
+                sock.close()
+                raise
+            with secured:
+                time.sleep(0.5)
+                secured.sendall(auth_data)
+                buffer = bytearray()
+                secured.setblocking(False)
+                while not self._stop_event.is_set():
+                    try:
                         try:
-                            # Proteção contra soquetes fechados prematuramente
-                            try:
-                                ready = select.select([sslSock], [], [], 0.5)
-                            except (OSError, ValueError):
-                                break
-                                
-                            if not ready[0]: continue
-                            
-                            dr = sslSock.recv(16384)
-                            if not dr: break
-                            buffer += dr
-                            
-                            while len(buffer) >= 16:
-                                payload_size = int.from_bytes(buffer[0:4], byteorder='little')
-                                if payload_size > 1000000 or payload_size < 100:
-                                    buffer = buffer[1:]
-                                    continue
-                                    
-                                if len(buffer) < 16 + payload_size:
-                                    break
-                                
-                                img_data = buffer[16:16+payload_size]
-                                if img_data.startswith(b'\xff\xd8'):
-                                    self.callback(bytes(img_data))
-                                
-                                buffer = buffer[16+payload_size:]
-                                
-                        except ssl.SSLWantReadError:
-                            continue
-                        except Exception as e:
-                            log_debug(f"[{self.ip}] Câmera Loop: {e}")
+                            ready = select.select([secured], [], [], 0.5)
+                        except (OSError, ValueError):
                             break
-            except Exception as e:
-                if not self._stop_event.is_set():
-                    # print(f"[{self.ip}] Câmera Erro: {e}")
-                    pass
-                if self._stop_event.wait(5): break
-            except Exception as e:
-                log_debug(f"[{self.ip}] Câmera: Erro de conexão/Auth: {e}")
-                if self._stop_event.wait(5): break
-
-    def stop(self):
-        self._stop_event.set()
-        # Não damos join aqui para não travar o loop principal, 
-        # mas a thread é daemon então ok.
+                        if not ready[0]:
+                            continue
+                        incoming = secured.recv(16384)
+                        if not incoming:
+                            break
+                        buffer += incoming
+                        while len(buffer) >= 16:
+                            payload_size = int.from_bytes(buffer[0:4], byteorder="little")
+                            if payload_size <= 0 or payload_size > 1_000_000:
+                                buffer = buffer[1:]
+                                continue
+                            if len(buffer) < 16 + payload_size:
+                                break
+                            packet = bytes(buffer[16:16 + payload_size])
+                            del buffer[:16 + payload_size]
+                            start = packet.find(b"\xff\xd8")
+                            end = packet.rfind(b"\xff\xd9")
+                            if start >= 0 and end > start:
+                                self.callback(packet[start:end + 2])
+                    except ssl.SSLWantReadError:
+                        continue
+                    except Exception as exc:
+                        log_debug(f"[{self.ip}] Câmera JPEG: {exc}")
+                        break
+        except Exception as exc:
+            log_debug(f"[{self.ip}] Câmera JPEG não abriu: {exc}")
 
 # Helper for Implicit FTP TLS (used by Bambu Lab)
 class ImplicitFTP_TLS(ftplib.FTP_TLS):
@@ -614,6 +647,7 @@ class BambuPrinter(BasePrinter):
         self.last_frame = None
         self.metadata_thread = None
         self.current_filename = ""
+        self._meta_token = 0
         
         # New status fields
         self.status.update({
@@ -821,18 +855,28 @@ class BambuPrinter(BasePrinter):
                             self.status['nozzle_diameter'] = diameter
                         if ntype:
                             self.status['nozzle_type'] = ntype
+                if 'gcode_file' in p:
+                    self.status['gcode_file'] = p['gcode_file']
+                if 'plate_idx' in p:
+                    try:
+                        self.status['plate_idx'] = int(p['plate_idx'])
+                    except (TypeError, ValueError):
+                        pass
+                plate = self._plate_number()
                 if 'subtask_name' in p:
                     new_file = p['subtask_name']
-                    if new_file != self.current_filename and new_file:
+                    if new_file and (new_file != self.current_filename or plate != self.status.get('_cover_plate')):
                         self.current_filename = new_file
                         self.status['filename'] = new_file
-                        # Simplificar nome da task
                         self.status['task_name'] = new_file.replace('.gcode', '').replace('.3mf', '')
-                        # Resetar metadata p/ nova task
                         self.status['cover_image'] = None
                         self.status['print_weight'] = 0
-                        # Tentar buscar metadata via FTP
+                        self.status['_cover_plate'] = plate
                         self._start_metadata_fetch(new_file)
+                elif self.current_filename and plate != self.status.get('_cover_plate'):
+                    self.status['cover_image'] = None
+                    self.status['_cover_plate'] = plate
+                    self._start_metadata_fetch(self.current_filename)
                 if 'cooling_fan_speed' in p:
                     self.status['fan_part'] = round((int(p['cooling_fan_speed']) / 15.0) * 100)
                 if 'big_fan1_speed' in p:
@@ -1027,13 +1071,26 @@ class BambuPrinter(BasePrinter):
             else:
                 self.start_time = None
 
+    def _plate_number(self):
+        gcode = str(self.status.get('gcode_file') or '')
+        match = re.search(r'plate_(\d+)\.gcode', gcode)
+        if match:
+            return match.group(1)
+        try:
+            number = int(self.status.get('plate_idx'))
+        except (TypeError, ValueError):
+            return '1'
+        return str(number) if number > 0 else '1'
+
     def _start_metadata_fetch(self, filename):
-        if self.metadata_thread and self.metadata_thread.is_alive():
-            return
-        self.metadata_thread = threading.Thread(target=self._fetch_metadata_ftp, args=(filename,), daemon=True)
+        self._meta_token += 1
+        token = self._meta_token
+        self.metadata_thread = threading.Thread(
+            target=self._fetch_metadata_ftp, args=(filename, token), daemon=True,
+        )
         self.metadata_thread.start()
 
-    def _fetch_metadata_ftp(self, filename):
+    def _fetch_metadata_ftp(self, filename, token=0):
         # Retries are important for X1C as the file might not be ready immediately
         # Aumentado para 12 tentativas (aprox 60s) como no exemplo oficial
         for attempt in range(12):
@@ -1076,41 +1133,44 @@ class BambuPrinter(BasePrinter):
                     ftp.retrbinary(f"RETR {target_path}", bio.write)
                     ftp.quit()
                     
+                    if token != self._meta_token:
+                        return
                     bio.seek(0)
+                    wanted = self._plate_number()
                     with zipfile.ZipFile(bio) as z:
-                        # Ler slice_info.config para peso
+                        names = set(z.namelist())
                         try:
                             with z.open('Metadata/slice_info.config') as f:
                                 tree = ET.parse(f)
-                                plate = tree.find('plate')
-                                if plate is not None:
-                                    plate_idx = '1'
-                                    for meta in plate:
-                                        if meta.get('key') == 'weight':
-                                            self.status['print_weight'] = float(meta.get('value'))
-                                        elif meta.get('key') == 'index':
-                                            plate_idx = meta.get('value')
-                                    
-                                    # Tentar imagem do plate
-                                    try:
-                                        with z.open(f'Metadata/plate_{plate_idx}.png') as img_f:
-                                            self.status['cover_image'] = base64.b64encode(img_f.read()).decode('utf-8')
-                                    except:
-                                        # Fallback para plate_1 se o index falhar
-                                        try:
-                                            with z.open(f'Metadata/plate_1.png') as img_f:
-                                                 self.status['cover_image'] = base64.b64encode(img_f.read()).decode('utf-8')
-                                        except: pass
+                            for plate in tree.findall('plate'):
+                                meta = {item.get('key'): item.get('value') for item in plate}
+                                if str(meta.get('index') or '') != wanted:
+                                    continue
+                                if meta.get('weight'):
+                                    self.status['print_weight'] = float(meta['weight'])
                         except Exception as e:
                             log_debug(f"[{self.ip}] Erro ao processar Zip: {e}")
-                    return # Sucesso
+                        image = None
+                        for candidate in (
+                            f'Metadata/plate_{wanted}.png',
+                            f'Metadata/top_{wanted}.png',
+                            f'Metadata/pick_{wanted}.png',
+                        ):
+                            if candidate in names:
+                                image = base64.b64encode(z.read(candidate)).decode('ascii')
+                                break
+                        if image and token == self._meta_token:
+                            self.status['cover_image'] = image
+                            self.status['_cover_plate'] = wanted
+                            log_info(f"[{self.ip}] Miniatura da placa {wanted}.")
+                    return
                 else:
                     ftp.quit()
             except Exception as e:
                 log_debug(f"[{self.ip}] Erro FTP (Tentativa {attempt+1}): {e}")
             
-            # Aguardar antes de tentar novamente
             time.sleep(5)
+        log_info(f"[{self.ip}] Não consegui baixar a miniatura de {filename}.")
 
     def update(self):
         # Incrementar horas de uso se estiver imprimindo

@@ -276,7 +276,7 @@ class PrinterFleet:
                 continue
             frame = getattr(driver, "last_frame", None)
             if isinstance(frame, (bytes, bytearray)) and now - slot["last_camera"] >= 8:
-                digest = sha1(frame[:64] + str(len(frame)).encode()).hexdigest()
+                digest = sha1(frame).hexdigest()
                 if digest != slot["camera_hash"]:
                     slot["camera_hash"] = digest
                     slot["last_camera"] = now
@@ -289,14 +289,17 @@ class PrinterFleet:
                     ))
             cover = None
             filename = ""
+            status = {}
             try:
                 status = driver.get_status() or {}
                 cover = status.get("cover_image")
                 filename = str(status.get("filename") or status.get("task_name") or "")
             except Exception:
                 cover = None
-            if isinstance(cover, str) and cover and not cover.startswith("http") and filename != slot["thumb_name"]:
-                slot["thumb_name"] = filename
+            plate = str(status.get("plate_idx") or status.get("gcode_file") or "")
+            thumb_token = f"{filename}|{plate}"
+            if isinstance(cover, str) and cover and not cover.startswith("http") and thumb_token != slot["thumb_name"]:
+                slot["thumb_name"] = thumb_token
                 messages.append((
                     "printer.thumbnail",
                     {
