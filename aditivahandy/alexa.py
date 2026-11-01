@@ -8,6 +8,7 @@ e o Handy pede para o Echo falar.
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 from urllib.parse import parse_qs, unquote, urlparse
@@ -283,16 +284,26 @@ async def _deliver(api: AmazonEchoApi, device: AmazonDevice, text: str, announce
             errors.append(exc)
             raise
 
-    handler._post_sequences = post
-    if announcement:
-        await api.call_alexa_announcement(device, text)
-    else:
-        await api.call_alexa_speak(device, text)
-    pending = list(handler._tasks)
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-    if errors:
-        raise errors[0]
+    async def once(use_announcement: bool) -> None:
+        errors.clear()
+        handler._post_sequences = post
+        if use_announcement:
+            await api.call_alexa_announcement(device, text)
+        else:
+            await api.call_alexa_speak(device, text)
+        pending = list(handler._tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if errors:
+            raise errors[0]
+
+    try:
+        await once(announcement)
+    except Exception as first:
+        try:
+            await once(not announcement)
+        except Exception:
+            raise first
 
 
 async def _list_devices() -> dict:
@@ -343,9 +354,14 @@ def _run(coro) -> dict:
     return _finish_result(result)
 
 
+def _plain_speech(text: str) -> str:
+    cleaned = re.sub(r"[<>&\"'`]", " ", text)
+    return " ".join(cleaned.split())
+
+
 def _speak_request(serial: str, text: str) -> tuple[str, str] | dict:
     serial = serial.strip()
-    text = " ".join(text.split())
+    text = _plain_speech(text)
     if not serial:
         return {"ok": False, "error": "Escolha o aparelho."}
     if not text:

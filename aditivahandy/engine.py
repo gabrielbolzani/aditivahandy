@@ -30,7 +30,7 @@ class Engine:
         forget_device()
         self._set_pairing("", "")
         self._relink.set()
-        self._set_status("Vínculo apagado. O novo link aparece nesta página.")
+        self._set_status("Conexão encerrada. Gerando outro link.")
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -55,34 +55,43 @@ class Engine:
     def _run(self) -> None:
         asyncio.run(self._loop())
 
+    async def _wait(self, task: asyncio.Task) -> bool:
+        """Espera a tarefa. Devolve True se ela deve ser descartada para gerar outro link."""
+        while not task.done():
+            if self._stop.is_set() or self._relink.is_set():
+                task.cancel()
+                break
+            await asyncio.sleep(0.2)
+        if not task.done():
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        return self._stop.is_set() or self._relink.is_set()
+
     async def _loop(self) -> None:
         backoff = 1
         while not self._stop.is_set():
             if self._relink.is_set():
                 self._relink.clear()
                 forget_device()
+                self._set_pairing("", "")
             token = saved_token()
             try:
                 if not token:
-                    token = await device_flow(self._set_status, self._set_pairing)
+                    flow = asyncio.create_task(device_flow(self._set_status, self._set_pairing))
+                    if await self._wait(flow):
+                        continue
+                    token = flow.result()
                 session = GatewaySession(token, self.fleet, self._set_status)
-                task = asyncio.create_task(session.run_once())
-                while not task.done():
-                    if self._stop.is_set() or self._relink.is_set():
-                        task.cancel()
-                        break
-                    await asyncio.sleep(0.3)
-                if self._stop.is_set() or self._relink.is_set():
-                    if not task.done():
-                        try:
-                            await task
-                        except (asyncio.CancelledError, Exception):
-                            pass
+                connection = asyncio.create_task(session.run_once())
+                if await self._wait(connection):
                     continue
-                result = task.result()
+                result = connection.result()
                 if result == "relink":
                     forget_device()
-                    self._set_status("A plataforma recusou o vínculo. Autorize de novo no navegador.")
+                    self._set_pairing("", "")
+                    self._set_status("Acesso recusado. Gerando outro link.")
                     backoff = 1
                     continue
                 self._set_status("Conexão encerrada. Vou reconectar.")
@@ -93,7 +102,8 @@ class Engine:
                 close_code = getattr(getattr(exc, "rcvd", None), "code", None)
                 if close_code == 4001:
                     forget_device()
-                    self._set_status("Token inválido. Autorize de novo no navegador.")
+                    self._set_pairing("", "")
+                    self._set_status("Acesso revogado. Gerando outro link.")
                     backoff = 1
                     continue
                 self._set_status(f"Conexão caiu. Nova tentativa em {backoff}s.")

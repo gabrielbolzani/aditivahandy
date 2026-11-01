@@ -41,7 +41,7 @@ O vínculo deste computador fica em `%APPDATA%\AditivaHandy\device.json`.
 No computador, rode:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.1/install.sh | bash
 ```
 
 O script escolhe um dos dois caminhos:
@@ -71,11 +71,11 @@ Funciona no Raspberry Pi 3, 4 e 5 com o Raspberry Pi OS de 64 bits. O Raspberry 
 4. Já dentro do Raspberry, rode:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.0/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.1/install.sh | bash
    ```
 
    A primeira instalação leva alguns minutos, porque baixa as bibliotecas.
-5. No navegador do seu computador, abra `http://aditivahandy.local:8787` (com o nome do passo 1). Clique no link do AditivaFlow, entre na sua conta e autorize.
+5. No navegador do seu computador, abra `http://aditivahandy.local:8787` (com o nome do passo 1). Clique no link do AditivaFlow, entre na sua conta e autorize. Para trocar de conta, use **Quebrar conexão e gerar outro link**.
 
 Pronto. Sempre que o Raspberry ligar, a ponte abre sozinha. Para conferir: `systemctl --user status aditivahandy`.
 

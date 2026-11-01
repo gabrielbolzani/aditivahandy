@@ -16,18 +16,24 @@ class AuthError(Exception):
 async def device_flow(on_status, on_code=None) -> str:
     """Pede um código e espera a conta aprovar no AditivaFlow."""
     on_status("Gerando o link de autorização.")
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{BASE}/handy-device-authorize",
-            headers=HTTP_HEADERS,
-            json={
-                "nickname": f"Handy-{socket.gethostname()}",
-                "os": platform.system(),
-                "os_version": platform.release(),
-                "app_version": APP_VERSION,
-                "hostname": socket.gethostname(),
-            },
-        )
+    timeout = httpx.Timeout(45.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            response = await client.post(
+                f"{BASE}/handy-device-authorize",
+                headers=HTTP_HEADERS,
+                json={
+                    "nickname": f"Handy-{socket.gethostname()}",
+                    "os": platform.system(),
+                    "os_version": platform.release(),
+                    "app_version": APP_VERSION,
+                    "hostname": socket.gethostname(),
+                },
+            )
+        except httpx.TimeoutException:
+            raise AuthError("A plataforma demorou para devolver o link. Vou tentar de novo.")
+        except httpx.HTTPError as exc:
+            raise AuthError(f"Não consegui falar com a plataforma ({exc.__class__.__name__}).")
         response.raise_for_status()
         data = response.json()
         code = data.get("user_code") or ""

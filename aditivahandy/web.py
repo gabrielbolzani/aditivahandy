@@ -45,7 +45,7 @@ PAGE = """<!DOCTYPE html>
       <p style="margin-top:8px">Código <code id="code"></code></p>
       <a id="link" class="button" target="_blank" rel="noopener">Abrir o AditivaFlow</a>
     </div>
-    <button id="relink" class="ghost" type="button">Gerar outro link</button>
+    <button id="relink" class="ghost" type="button">Quebrar conexão e gerar outro link</button>
   </div>
   <div class="card">
     <strong>Máquinas</strong>

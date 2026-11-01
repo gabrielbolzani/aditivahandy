@@ -163,10 +163,11 @@ class GatewaySession:
                 message = await asyncio.to_thread(apply_update, str(inner.get("version") or ""))
                 self.on_status(message)
             elif command == "alexa.speak":
+                announce = inner.get("announcement")
                 result = await alexa.speak_async(
                     str(inner.get("serial") or ""),
                     str(inner.get("text") or "Teste do AditivaFlow."),
-                    False,
+                    True if announce is None else bool(announce),
                 )
                 if not result.get("ok"):
                     raise RuntimeError(str(result.get("error") or "A Alexa não falou."))

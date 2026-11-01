@@ -229,6 +229,7 @@ class PrinterFleet:
                         payload[key] = number
             if str(slot["info"].get("protocol") or "").lower() == "elegoo" and "remaining_time" in payload:
                 payload["remaining_time"] = int(payload["remaining_time"] * 60)
+            payload["last_update"] = time.time()
             firmware = status.get("firmware_update") or {}
             if isinstance(firmware, dict):
                 if firmware.get("current"):
