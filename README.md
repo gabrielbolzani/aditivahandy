@@ -41,7 +41,7 @@ O vínculo deste computador fica em `%APPDATA%\AditivaHandy\device.json`.
 No computador, rode:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.3/install.sh | bash
 ```
 
 O script escolhe um dos dois caminhos:
@@ -71,7 +71,7 @@ Funciona no Raspberry Pi 3, 4 e 5 com o Raspberry Pi OS de 64 bits. O Raspberry 
 4. Já dentro do Raspberry, rode:
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.2/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/gabrielbolzani/aditivahandy/v1.3.3/install.sh | bash
    ```
 
    A primeira instalação leva alguns minutos, porque baixa as bibliotecas.

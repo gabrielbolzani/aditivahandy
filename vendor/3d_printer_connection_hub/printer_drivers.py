@@ -582,8 +582,25 @@ class BambuCameraThread(threading.Thread):
                                 continue
                             if len(buffer) < 16 + payload_size:
                                 break
+                            magic = int.from_bytes(buffer[4:8], byteorder="little")
                             packet = bytes(buffer[16:16 + payload_size])
                             del buffer[:16 + payload_size]
+                            # H2D responde o pedido de JPEG com a recusa do navegador de arquivos.
+                            # A1 entrega o JPEG nesse mesmo canal e não cai aqui.
+                            if magic == 0x0003013F and payload_size <= 16 and packet.find(b"\xff\xd8") < 0:
+                                if not getattr(self, "_liveview_hint", False):
+                                    self._liveview_hint = True
+                                    log_info(
+                                        f"[{self.ip}] A câmera não está liberada. "
+                                        "No painel da impressora, em LAN, ative o vídeo local (LAN Only Liveview)."
+                                    )
+                                if self._port_open(322) and shutil.which("ffmpeg"):
+                                    log_info(f"[{self.ip}] Câmera pelo vídeo de rede.")
+                                    self._read_rtsp()
+                                    return
+                                if self._stop_event.wait(30):
+                                    return
+                                return
                             start = packet.find(b"\xff\xd8")
                             end = packet.rfind(b"\xff\xd9")
                             if start >= 0 and end > start:

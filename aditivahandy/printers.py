@@ -4,6 +4,7 @@ import base64
 import sys
 import threading
 import time
+import urllib.request
 from hashlib import sha1
 
 from .config import HUB_DIR
@@ -19,6 +20,43 @@ SUPPORTED = {
     "moonraker": "moonraker",
     "elegoo": "elegoo",
 }
+
+
+def _camera_host(value: str) -> str:
+    host = str(value or "").strip()
+    if not host or any(mark in host for mark in ("/", "\\", " ", "@")):
+        return ""
+    return host
+
+
+def _jpeg_ok(data) -> bool:
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 100:
+        return False
+    return data.startswith(b"\xff\xd8") and data.rfind(b"\xff\xd9") > 20
+
+
+def _png_ok(payload: str) -> bool:
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except Exception:
+        return False
+    return len(raw) > 32 and raw.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def _fetch_external_jpeg(host: str):
+    for path in ("/raw", "/snapshot"):
+        try:
+            request = urllib.request.Request(
+                f"http://{host}{path}",
+                headers={"User-Agent": "AditivaHandy"},
+            )
+            with urllib.request.urlopen(request, timeout=4) as response:
+                data = response.read(1_500_000)
+            if _jpeg_ok(data):
+                return bytes(data)
+        except Exception:
+            continue
+    return None
 
 TELEMETRY_KEYS = (
     "progress",
@@ -119,6 +157,10 @@ class PrinterFleet:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._poll, name="handy-printers", daemon=True)
         self._thread.start()
+        self._camera_thread = threading.Thread(
+            target=self._watch_external_cameras, name="handy-external-cameras", daemon=True,
+        )
+        self._camera_thread.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -272,9 +314,15 @@ class PrinterFleet:
             slots = list(self._slots.items())
         for machine_id, slot in slots:
             driver = slot.get("driver")
-            if driver is None:
-                continue
-            frame = getattr(driver, "last_frame", None)
+            external_ip = _camera_host(str((slot.get("info") or {}).get("external_camera_ip") or ""))
+            if external_ip:
+                frame = slot.get("external_frame")
+                if not _jpeg_ok(frame):
+                    frame = None
+            else:
+                if driver is None:
+                    continue
+                frame = getattr(driver, "last_frame", None)
             if isinstance(frame, (bytes, bytearray)) and now - slot["last_camera"] >= 8:
                 digest = sha1(frame).hexdigest()
                 if digest != slot["camera_hash"]:
@@ -297,8 +345,17 @@ class PrinterFleet:
             except Exception:
                 cover = None
             plate = str(status.get("plate_idx") or status.get("gcode_file") or "")
+            cover_plate = str(status.get("_cover_plate") or "")
+            plate_marks = [item for item in (str(status.get("plate_idx") or ""), str(status.get("gcode_file") or "")) if item]
+            if cover_plate and plate_marks and not any(
+                cover_plate == item or f"plate_{cover_plate}.gcode" in item
+                for item in plate_marks
+            ):
+                cover = None
+            if isinstance(cover, str) and not _png_ok(cover):
+                cover = None
             thumb_token = f"{filename}|{plate}"
-            if isinstance(cover, str) and cover and not cover.startswith("http") and thumb_token != slot["thumb_name"]:
+            if isinstance(cover, str) and cover and not cover.startswith("http") and filename and thumb_token != slot["thumb_name"]:
                 slot["thumb_name"] = thumb_token
                 messages.append((
                     "printer.thumbnail",
@@ -331,6 +388,28 @@ class PrinterFleet:
             kwargs["gcode"] = payload["gcode"]
         driver.send_command(name, **kwargs)
         return "comando enviado"
+
+    def _watch_external_cameras(self) -> None:
+        while not self._stop.is_set():
+            with self._lock:
+                targets = [
+                    (machine_id, _camera_host(str((slot.get("info") or {}).get("external_camera_ip") or "")))
+                    for machine_id, slot in self._slots.items()
+                ]
+            for machine_id, host in targets:
+                frame = _fetch_external_jpeg(host) if host else None
+                with self._lock:
+                    slot = self._slots.get(machine_id)
+                    if slot is None:
+                        continue
+                    if slot.get("external_ip") != host:
+                        slot["external_ip"] = host
+                        slot["external_frame"] = None
+                        slot["camera_hash"] = ""
+                    if frame is not None:
+                        slot["external_frame"] = frame
+            if self._stop.wait(8):
+                return
 
     def _poll(self) -> None:
         while not self._stop.wait(1):
