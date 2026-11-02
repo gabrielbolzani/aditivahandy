@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logger_config import log_info, log_error, log_debug, log_warn
 
 # Bambu Lab Filament Mapping
@@ -993,8 +993,14 @@ class BambuPrinter(BasePrinter):
                         pass
                 if 'gcode_start_time' in p:
                     try:
-                        self.status['_job_started'] = int(p['gcode_start_time'])
-                    except (TypeError, ValueError):
+                        started = int(float(p['gcode_start_time']))
+                        if started > 10_000_000_000:
+                            started //= 1000
+                        if started > 0:
+                            self.status['_job_started'] = started
+                            self.status['started_at'] = datetime.fromtimestamp(started, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                            self.status['elapsed_time'] = max(0, int(time.time()) - started)
+                    except (TypeError, ValueError, OSError, OverflowError):
                         pass
                 plate = self._plate_number()
                 if 'subtask_name' in p:

@@ -82,6 +82,7 @@ TELEMETRY_KEYS = (
     "remaining_time",
     "print_duration",
     "elapsed_time",
+    "started_at",
     "temp_nozzle",
     "target_nozzle",
     "temp_nozzle_left",
@@ -276,7 +277,7 @@ class PrinterFleet:
                 value = status.get(key)
                 if value is None or value == "":
                     continue
-                if key in ("filename", "task_name", "active_tray_name", "active_tray_uuid", "serial", "ip", "printer_type", "nozzle_type", "nozzle_type_left", "nozzle_type_right", "bed_type"):
+                if key in ("filename", "task_name", "active_tray_name", "active_tray_uuid", "serial", "ip", "printer_type", "nozzle_type", "nozzle_type_left", "nozzle_type_right", "bed_type", "started_at"):
                     payload[key] = value
                 elif key in ("ams", "hms", "print_error"):
                     payload[key] = value
