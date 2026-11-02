@@ -83,31 +83,36 @@ class GatewaySession:
 
             async def publisher():
                 await authed.wait()
-                next_config = asyncio.get_running_loop().time() + 60
-                next_telemetry = asyncio.get_running_loop().time()
-                next_health = asyncio.get_running_loop().time() + 5
-                next_energy = asyncio.get_running_loop().time() + 2
+                loop = asyncio.get_running_loop()
+                next_config = loop.time() + 60
+                next_telemetry = loop.time()
+                next_health = loop.time() + 5
+                next_energy = loop.time() + 2
+                sent_state: dict[str, str] = {}
                 while True:
-                    now = asyncio.get_running_loop().time()
+                    now = loop.time()
                     if now >= next_config:
                         await send("config.get", {})
                         next_config = now + 60
-                    if now >= next_telemetry:
+                    states = self.fleet.snapshot_states()
+                    if now >= next_telemetry or states != sent_state:
                         items = self.fleet.collect_telemetry()
                         if items:
                             await send("printer.telemetry.batch", {"items": items})
                             self.fleet.commit_usage()
-                        for message_type, payload in self.fleet.collect_media():
-                            await send(message_type, payload)
-                        next_telemetry = now + 3
+                        sent_state = states
+                        active = any(state in {"printing", "paused", "running"} for state in states.values())
+                        next_telemetry = now + (3 if active else 60)
+                    for message_type, payload in self.fleet.collect_media():
+                        await send(message_type, payload)
                     if now >= next_health:
                         await send("handy.health", _health())
-                        next_health = now + 30
+                        next_health = now + 120
                     if now >= next_energy:
                         readings = await asyncio.to_thread(self.energy.collect)
                         for reading in readings:
                             await send("energy.reading", reading)
-                        next_energy = now + 5
+                        next_energy = now + 30
                     await asyncio.sleep(0.5)
 
             reader_task = asyncio.create_task(reader())

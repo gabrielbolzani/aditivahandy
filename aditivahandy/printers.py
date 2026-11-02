@@ -258,6 +258,23 @@ class PrinterFleet:
                 })
             return rows
 
+    def snapshot_states(self) -> dict[str, str]:
+        states = {}
+        with self._lock:
+            slots = list(self._slots.items())
+        for machine_id, slot in slots:
+            driver = slot.get("driver")
+            if driver is None:
+                states[machine_id] = "offline"
+                continue
+            try:
+                status = driver.get_status() or {}
+            except Exception:
+                states[machine_id] = "offline"
+                continue
+            states[machine_id] = map_state(status.get("state"))
+        return states
+
     def collect_telemetry(self) -> list[dict]:
         items = []
         with self._lock:
