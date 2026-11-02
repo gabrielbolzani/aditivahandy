@@ -466,6 +466,7 @@ class BambuCameraThread(threading.Thread):
         self.access_code = access_code
         self.callback = callback
         self._stop_event = threading.Event()
+        self.jpeg_channel = False
 
     def stop(self):
         self._stop_event.set()
@@ -604,6 +605,7 @@ class BambuCameraThread(threading.Thread):
                             start = packet.find(b"\xff\xd8")
                             end = packet.rfind(b"\xff\xd9")
                             if start >= 0 and end > start:
+                                self.jpeg_channel = True
                                 self.callback(packet[start:end + 2])
                     except ssl.SSLWantReadError:
                         continue
@@ -637,6 +639,116 @@ class ImplicitFTP_TLS(ftplib.FTP_TLS):
                 session = self.sock.session
             conn = self.context.wrap_socket(conn, server_hostname=self.host, session=session)
         return conn, size
+
+
+class BambuFileChannel:
+    """Navegador de arquivos da porta 6000, só leitura: lista os envios e lê um item de dentro do 3mf."""
+
+    LOGIN = 0x0101013F
+    CTRL = 0x0102013F
+    LIST_INFO = 1
+    SUB_FILE = 2
+
+    def __init__(self, ip, access_code, timeout=15):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection((ip, 6000), timeout=5)
+        try:
+            self.sock = ctx.wrap_socket(raw, server_hostname=None)
+        except Exception:
+            raw.close()
+            raise
+        self.sock.settimeout(timeout)
+        self.frame_seq = 1
+        self.cmd_seq = 1
+        try:
+            code = str(access_code or "").encode("ascii", "replace")[:8].ljust(8, b"\0")
+            self._send(self.LOGIN, b"bblp".ljust(8, b"\0") + code)
+            self._read_frame()
+            setup = {
+                "sequence": 0,
+                "mtype": 12291,
+                "req": {
+                    "t_av": 1, "mtype": 12289, "peer_t": 3,
+                    "pid": f"{int(time.time() * 1000) & 0xFFFFFFFF:08x}", "ver": "02.03.00.00",
+                },
+            }
+            self._send(self.CTRL, json.dumps(setup, separators=(",", ":")).encode())
+            reply, _ = self._split(self._read_frame())
+            if not reply or int(reply.get("result", -1)) != 0:
+                raise RuntimeError(f"porta 6000 recusou a sessão: {reply}")
+        except Exception:
+            self.close()
+            raise
+
+    def _send(self, magic, payload):
+        self.sock.sendall(struct.pack("<IIII", len(payload), magic, self.frame_seq, 0) + payload)
+        self.frame_seq += 1
+
+    def _read_exact(self, size):
+        data = bytearray()
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("porta 6000 fechou a sessão")
+            data += chunk
+        return bytes(data)
+
+    def _read_frame(self):
+        size = struct.unpack_from("<I", self._read_exact(16), 0)[0]
+        return self._read_exact(size) if size else b""
+
+    @staticmethod
+    def _split(data):
+        if not data.startswith(b"{"):
+            return None, data
+        try:
+            _, end = json.JSONDecoder().raw_decode(data.decode("latin-1"))
+            reply = json.loads(data[:end].decode("utf-8"))
+        except ValueError:
+            return None, data
+        rest = data[end:]
+        return reply, rest[2:] if rest.startswith(b"\n\n") else rest
+
+    def request(self, cmdtype, req, timeout=20):
+        seq = self.cmd_seq
+        self.cmd_seq += 1
+        body = {"mtype": 12289, "cmdtype": cmdtype, "sequence": seq, "req": req}
+        self._send(self.CTRL, json.dumps(body, separators=(",", ":")).encode())
+        data = b""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            reply, chunk = self._split(self._read_frame())
+            if not reply or int(reply.get("sequence", -1)) != seq:
+                continue
+            data += chunk
+            detail = reply.get("reply") if isinstance(reply.get("reply"), dict) else {}
+            if int(reply.get("result", -1)) == 1 or detail.get("continue"):
+                continue
+            return reply, data
+        raise TimeoutError(f"porta 6000 não respondeu ao comando {cmdtype}")
+
+    def list_models(self):
+        # H2D responde a lista do pendrive em "external"; "udisk" e a memória interna devolvem erro.
+        for storage in ("external", "udisk", ""):
+            req = {"type": "model", "api_version": 2, "notify": "DETAIL"}
+            if storage:
+                req["storage"] = storage
+            reply, _ = self.request(self.LIST_INFO, req)
+            if int(reply.get("result", -1)) == 0:
+                return list((reply.get("reply") or {}).get("file_lists") or [])
+        return []
+
+    def read_member(self, path, member):
+        reply, data = self.request(self.SUB_FILE, {"paths": [f"{path}#{member}"]})
+        return data if int(reply.get("result", -1)) == 0 and data else None
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
 def _split_packed_temp(value):
     """Temperatura Bambu: float simples, ou inteiro com atual nos 16 bits baixos e meta nos altos."""
@@ -879,6 +991,11 @@ class BambuPrinter(BasePrinter):
                         self.status['plate_idx'] = int(p['plate_idx'])
                     except (TypeError, ValueError):
                         pass
+                if 'gcode_start_time' in p:
+                    try:
+                        self.status['_job_started'] = int(p['gcode_start_time'])
+                    except (TypeError, ValueError):
+                        pass
                 plate = self._plate_number()
                 if 'subtask_name' in p:
                     new_file = p['subtask_name']
@@ -1110,6 +1227,7 @@ class BambuPrinter(BasePrinter):
     def _fetch_metadata_ftp(self, filename, token=0):
         # Retries are important for X1C as the file might not be ready immediately
         # Aumentado para 12 tentativas (aprox 60s) como no exemplo oficial
+        listed = False
         for attempt in range(12):
             try:
                 log_debug(f"[{self.ip}] FTP Metadata (Tentativa {attempt+1}): {filename}")
@@ -1153,12 +1271,13 @@ class BambuPrinter(BasePrinter):
                     if token != self._meta_token:
                         return
                     bio.seek(0)
-                    wanted = self._plate_number()
+                    reported = wanted = self._plate_number()
                     with zipfile.ZipFile(bio) as z:
                         names = set(z.namelist())
                         try:
                             with z.open('Metadata/slice_info.config') as f:
                                 tree = ET.parse(f)
+                            wanted = self._image_plate(tree, reported)
                             for plate in tree.findall('plate'):
                                 meta = {item.get('key'): item.get('value') for item in plate}
                                 if str(meta.get('index') or '') != wanted:
@@ -1172,22 +1291,113 @@ class BambuPrinter(BasePrinter):
                             f'Metadata/plate_{wanted}.png',
                             f'Metadata/top_{wanted}.png',
                             f'Metadata/pick_{wanted}.png',
-                        ):
+                        ) if wanted else ():
                             if candidate in names:
                                 image = base64.b64encode(z.read(candidate)).decode('ascii')
                                 break
                         if image and token == self._meta_token:
                             self.status['cover_image'] = image
-                            self.status['_cover_plate'] = wanted
+                            self.status['_cover_plate'] = reported
                             log_info(f"[{self.ip}] Miniatura da placa {wanted}.")
                     return
                 else:
                     ftp.quit()
             except Exception as e:
                 log_debug(f"[{self.ip}] Erro FTP (Tentativa {attempt+1}): {e}")
-            
+
+            if token != self._meta_token:
+                return
+            if attempt >= 1 and self._files_channel_allowed():
+                found = self._fetch_cover_files_channel(filename, token)
+                if found:
+                    return
+                listed = listed or found is False
             time.sleep(5)
         log_info(f"[{self.ip}] Não consegui baixar a miniatura de {filename}.")
+        if listed:
+            log_info(
+                f"[{self.ip}] O arquivo não está no cartão ou pendrive da impressora. "
+                "Envie para o armazenamento externo para a miniatura aparecer."
+            )
+
+    @staticmethod
+    def _image_plate(tree, reported):
+        # H2D informa plate_1.gcode mesmo quando o 3mf enviado só tem outra placa fatiada.
+        sliced = []
+        for plate in tree.findall('plate'):
+            meta = {item.get('key'): item.get('value') for item in plate}
+            if meta.get('index'):
+                sliced.append(str(meta['index']))
+        if len(sliced) == 1:
+            return sliced[0]
+        if not sliced or reported in sliced:
+            return reported
+        return None
+
+    def _files_channel_allowed(self):
+        # A1 e P1 usam a porta 6000 para a câmera JPEG; não abrir outra sessão nela.
+        if str(self.serial or '').upper().startswith(('030', '039', '01P', '01S')):
+            return False
+        return not getattr(self.cam_thread, 'jpeg_channel', False)
+
+    def _fetch_cover_files_channel(self, filename, token):
+        # H2D guarda o envio em /media/usb0/cache/<nome>.gcode.3mf e não abre o FTPS.
+        # Da memória interna a impressora não deixa baixar (allow_internal_model_download = false).
+        # Devolve True com a miniatura, False quando listou e não achou, None quando a porta não respondeu.
+        gcode = str(self.status.get('gcode_file') or '')
+        exact = gcode.rsplit('/', 1)[-1] if gcode.endswith('.3mf') else ''
+        names = {filename, f"{filename}.3mf", f"{filename}.gcode.3mf"} if filename else set()
+        started = int(self.status.get('_job_started') or 0)
+        channel = None
+        try:
+            channel = BambuFileChannel(self.ip, self.access_code)
+            candidates = []
+            for item in channel.list_models():
+                path = str(item.get('path') or item.get('name') or '')
+                base = path.rsplit('/', 1)[-1]
+                try:
+                    stamp = int(item.get('time') or 0)
+                except (TypeError, ValueError):
+                    stamp = 0
+                if exact and base == exact:
+                    candidates.append((2, stamp, path))
+                elif base in names:
+                    # Mesmo nome de um envio antigo não serve: o arquivo tem que ser deste trabalho.
+                    if started and stamp and not (started - 43200 <= stamp <= started + 900):
+                        continue
+                    candidates.append((1 if '/cache/' in path else 0, stamp, path))
+            if not candidates:
+                return False
+            path = max(candidates)[2]
+            reported = self._plate_number()
+            info = channel.read_member(path, 'Metadata/slice_info.config')
+            tree = ET.fromstring(info) if info else ET.Element('config')
+            wanted = self._image_plate(tree, reported)
+            if not wanted:
+                log_debug(f"[{self.ip}] {path} não tem a placa {reported} fatiada.")
+                return False
+            image = channel.read_member(path, f'Metadata/plate_{wanted}.png')
+            if not image or not image.startswith(b'\x89PNG\r\n\x1a\n'):
+                return False
+            weight = None
+            for plate in tree.findall('plate'):
+                meta = {item.get('key'): item.get('value') for item in plate}
+                if str(meta.get('index') or '') == wanted and meta.get('weight'):
+                    weight = float(meta['weight'])
+            if token != self._meta_token:
+                return True
+            if weight is not None:
+                self.status['print_weight'] = weight
+            self.status['cover_image'] = base64.b64encode(image).decode('ascii')
+            self.status['_cover_plate'] = reported
+            log_info(f"[{self.ip}] Miniatura da placa {wanted} pela porta 6000.")
+            return True
+        except Exception as e:
+            log_debug(f"[{self.ip}] Arquivos pela porta 6000: {e}")
+            return None
+        finally:
+            if channel is not None:
+                channel.close()
 
     def update(self):
         # Incrementar horas de uso se estiver imprimindo
