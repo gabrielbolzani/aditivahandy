@@ -1,4 +1,4 @@
 """AditivaHandy — ponte local entre as impressoras e o AditivaFlow."""
 
 APP_NAME = "AditivaHandy"
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"

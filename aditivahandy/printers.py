@@ -22,11 +22,25 @@ SUPPORTED = {
 }
 
 
+EXTERNAL_CAMERA_PROTOCOLS = {"esp32_remotecam"}
+
+
 def _camera_host(value: str) -> str:
     host = str(value or "").strip()
+    for prefix in ("http://", "https://"):
+        if host.lower().startswith(prefix):
+            host = host[len(prefix):]
+    host = host.rstrip("/")
     if not host or any(mark in host for mark in ("/", "\\", " ", "@")):
         return ""
     return host
+
+
+def _external_camera_host(info: dict) -> str:
+    protocol = str(info.get("external_camera_protocol") or "esp32_remotecam").lower()
+    if protocol not in EXTERNAL_CAMERA_PROTOCOLS:
+        return ""
+    return _camera_host(str(info.get("external_camera_ip") or ""))
 
 
 def _jpeg_ok(data) -> bool:
@@ -44,6 +58,7 @@ def _png_ok(payload: str) -> bool:
 
 
 def _fetch_external_jpeg(host: str):
+    # ESP32-RemoteCam: /raw é a foto rápida na resolução atual; /snapshot troca para UXGA e demora mais.
     for path in ("/raw", "/snapshot"):
         try:
             request = urllib.request.Request(
@@ -314,7 +329,7 @@ class PrinterFleet:
             slots = list(self._slots.items())
         for machine_id, slot in slots:
             driver = slot.get("driver")
-            external_ip = _camera_host(str((slot.get("info") or {}).get("external_camera_ip") or ""))
+            external_ip = _external_camera_host(slot.get("info") or {})
             if external_ip:
                 frame = slot.get("external_frame")
                 if not _jpeg_ok(frame):
@@ -393,7 +408,7 @@ class PrinterFleet:
         while not self._stop.is_set():
             with self._lock:
                 targets = [
-                    (machine_id, _camera_host(str((slot.get("info") or {}).get("external_camera_ip") or "")))
+                    (machine_id, _external_camera_host(slot.get("info") or {}))
                     for machine_id, slot in self._slots.items()
                 ]
             for machine_id, host in targets:

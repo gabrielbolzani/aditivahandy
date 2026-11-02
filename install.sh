@@ -3,7 +3,7 @@
 # Com Docker, sobe o container. Sem Docker, usa o Python 3.12 ou mais novo e o systemd do usuário.
 set -euo pipefail
 
-VERSION=1.3.4
+VERSION=1.3.5
 DEST="${HOME}/.local/share/aditivahandy"
 PYTHON_PAGE="https://www.python.org/downloads/"
 
